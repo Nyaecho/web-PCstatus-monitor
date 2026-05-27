@@ -132,6 +132,7 @@ def log_event(event_type: str, message: str):
         "启动": LogColors.MAGENTA,
         "信息": LogColors.CYAN,
         "停止": LogColors.RED,
+        "任务": LogColors.BLUE,
     }
     color = event_colors.get(event_type, LogColors.WHITE)
     
@@ -184,7 +185,7 @@ class ClientSubscription:
     client_id: str = ""
     interval: float = 1.0
     categories: Set[str] = field(default_factory=lambda: set(MetricCategory))
-    task: Optional[asyncio.Task] = None  # 每个客户端独立的推送任务
+    task: Optional[asyncio.Task] = None
 
 
 # ============================================================================
@@ -522,6 +523,8 @@ def collect_metrics(categories: Set[str]) -> dict:
 
 async def client_push_task(sub: ClientSubscription):
     """单个客户端的独立推送任务"""
+    log_event("任务", f"{sub.client_id} 推送任务启动 (间隔 {sub.interval}s)")
+    
     try:
         # 首次立即发送
         metrics = collect_metrics(sub.categories)
@@ -534,6 +537,10 @@ async def client_push_task(sub: ClientSubscription):
             # 等待指定间隔，期间不调用任何接口
             await asyncio.sleep(sub.interval)
             
+            # 检查任务是否被取消
+            if asyncio.current_task().cancelled():
+                break
+            
             # 到达时间后才采集数据
             metrics = collect_metrics(sub.categories)
             msg = {"type": "metrics", "data": metrics}
@@ -541,17 +548,13 @@ async def client_push_task(sub: ClientSubscription):
             log_send(sub.client_id, "metrics", metrics)
 
     except asyncio.CancelledError:
-        # 任务被取消（客户端断开）
-        pass
+        log_event("任务", f"{sub.client_id} 推送任务被取消")
     except websockets.exceptions.ConnectionClosed:
         log_event("丢失", f"{sub.client_id} 连接已断开")
     except Exception as exc:
         log_event("错误", f"{sub.client_id} 推送任务出错: {exc}")
     finally:
-        # 清理订阅
-        async with _clients_lock:
-            if sub.websocket in _clients:
-                del _clients[sub.websocket]
+        log_event("任务", f"{sub.client_id} 推送任务结束")
 
 
 # ============================================================================
@@ -578,7 +581,13 @@ async def handle_subscribe(client_ws, client_id: str, data: dict) -> dict:
         if client_ws in _clients:
             old_sub = _clients[client_ws]
             if old_sub.task and not old_sub.task.done():
+                log_event("任务", f"{client_id} 取消旧的推送任务")
                 old_sub.task.cancel()
+                # 等待旧任务完成取消
+                try:
+                    await asyncio.wait_for(old_sub.task, timeout=1.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
 
     # 创建新的订阅
     sub = ClientSubscription(
@@ -588,11 +597,12 @@ async def handle_subscribe(client_ws, client_id: str, data: dict) -> dict:
         categories=categories
     )
 
-    # 启动独立的推送任务
-    sub.task = asyncio.create_task(client_push_task(sub))
-
+    # 添加到客户端列表
     async with _clients_lock:
         _clients[client_ws] = sub
+
+    # 启动独立的推送任务
+    sub.task = asyncio.create_task(client_push_task(sub))
 
     log_event("订阅", f"{client_id} 订阅了 {len(categories)} 个类别, 间隔 {interval}s")
     
@@ -712,7 +722,6 @@ async def main() -> None:
     psutil.cpu_percent(interval=None)
 
     async with websockets.serve(handle_client, HOST, PORT, origins=None):
-        # 保持服务器运行
         await asyncio.get_running_loop().create_future()
 
 
