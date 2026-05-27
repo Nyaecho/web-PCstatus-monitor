@@ -128,9 +128,8 @@ def log_event(event_type: str, message: str):
         "丢失": LogColors.RED,
         "错误": LogColors.RED,
         "订阅": LogColors.GREEN,
-        "取消": LogColors.YELLOW,
+        "跳过": LogColors.YELLOW,
         "启动": LogColors.MAGENTA,
-        "信息": LogColors.CYAN,
         "停止": LogColors.RED,
         "任务": LogColors.BLUE,
     }
@@ -314,7 +313,7 @@ def collect_static_info() -> dict:
 
 def collect_cpu_metrics() -> dict:
     cpu_percent = psutil.cpu_percent(interval=None)
-    cpu_temp = None
+    cpu_temp = 0
     try:
         temps = psutil.sensors_temperatures()
         if temps:
@@ -330,7 +329,7 @@ def collect_cpu_metrics() -> dict:
         pass
 
     cpu_freq = psutil.cpu_freq()
-    cpu_freq_current = round(cpu_freq.current, 1) if cpu_freq else None
+    cpu_freq_current = round(cpu_freq.current, 1) if cpu_freq else 0
 
     return {
         "percent": round(cpu_percent, 1),
@@ -412,7 +411,15 @@ def collect_gpu_metrics() -> Optional[dict]:
         except Exception:
             pass
 
-    return None
+    return {
+        "load_percent": 0,
+        "temp": 0,
+        "memory": {
+            "used_gb": 0,
+            "total_gb": 0,
+            "percent": 0
+        }
+    }
 
 
 def collect_network_metrics() -> dict:
@@ -465,18 +472,22 @@ def collect_disk_metrics() -> dict:
         return {"percent": 0, "used_gb": 0, "free_gb": 0, "total_gb": 0}
 
 
-def collect_battery_metrics() -> Optional[dict]:
+def collect_battery_metrics() -> dict:
     try:
         battery = psutil.sensors_battery()
         if battery:
             return {
                 "percent": battery.percent,
                 "power_plugged": battery.power_plugged,
-                "secs_left": battery.secsleft if battery.secsleft not in (psutil.POWER_TIME_UNLIMITED, psutil.POWER_TIME_UNKNOWN) else None
+                "secs_left": battery.secsleft if battery.secsleft not in (psutil.POWER_TIME_UNLIMITED, psutil.POWER_TIME_UNKNOWN) else 0
             }
     except Exception:
         pass
-    return None
+    return {
+        "percent": 0,
+        "power_plugged": False,
+        "secs_left": 0
+    }
 
 
 def collect_system_metrics() -> dict:
@@ -501,17 +512,13 @@ def collect_metrics(categories: Set[str]) -> dict:
     if MetricCategory.RAM in categories:
         result["ram"] = collect_ram_metrics()
     if MetricCategory.GPU in categories:
-        gpu_data = collect_gpu_metrics()
-        if gpu_data:
-            result["gpu"] = gpu_data
+        result["gpu"] = collect_gpu_metrics()
     if MetricCategory.NETWORK in categories:
         result["network"] = collect_network_metrics()
     if MetricCategory.DISK in categories:
         result["disk"] = collect_disk_metrics()
     if MetricCategory.BATTERY in categories:
-        battery_data = collect_battery_metrics()
-        if battery_data:
-            result["battery"] = battery_data
+        result["battery"] = collect_battery_metrics()
     if MetricCategory.SYSTEM in categories:
         result["system"] = collect_system_metrics()
     return result
@@ -534,14 +541,12 @@ async def client_push_task(sub: ClientSubscription):
 
         # 循环等待并发送
         while True:
-            # 等待指定间隔，期间不调用任何接口
             await asyncio.sleep(sub.interval)
             
             # 检查任务是否被取消
             if asyncio.current_task().cancelled():
                 break
             
-            # 到达时间后才采集数据
             metrics = collect_metrics(sub.categories)
             msg = {"type": "metrics", "data": metrics}
             await sub.websocket.send(json.dumps(msg, ensure_ascii=False))
@@ -576,18 +581,27 @@ async def handle_subscribe(client_ws, client_id: str, data: dict) -> dict:
             except ValueError:
                 pass
 
-    # 取消旧的推送任务（如果有）
+    # 检查是否已有相同的订阅配置
     async with _clients_lock:
         if client_ws in _clients:
             old_sub = _clients[client_ws]
+            # 如果配置相同且任务正在运行，直接返回成功
+            if (old_sub.interval == interval and 
+                old_sub.categories == categories and 
+                old_sub.task is not None and 
+                not old_sub.task.done()):
+                log_event("跳过", f"{client_id} 订阅配置未变化，跳过重建")
+                return {
+                    "type": "subscribed",
+                    "data": {
+                        "interval": interval,
+                        "categories": list(categories)
+                    }
+                }
+            # 配置不同，取消旧任务
             if old_sub.task and not old_sub.task.done():
-                log_event("任务", f"{client_id} 取消旧的推送任务")
+                log_event("任务", f"{client_id} 配置变化，取消旧任务")
                 old_sub.task.cancel()
-                # 等待旧任务完成取消
-                try:
-                    await asyncio.wait_for(old_sub.task, timeout=1.0)
-                except (asyncio.CancelledError, asyncio.TimeoutError):
-                    pass
 
     # 创建新的订阅
     sub = ClientSubscription(
@@ -618,6 +632,9 @@ async def handle_subscribe(client_ws, client_id: str, data: dict) -> dict:
 async def handle_unsubscribe(client_ws, client_id: str) -> dict:
     async with _clients_lock:
         if client_ws in _clients:
+            sub = _clients[client_ws]
+            if sub.task and not sub.task.done():
+                sub.task.cancel()
             sub = _clients[client_ws]
             # 取消推送任务
             if sub.task and not sub.task.done():
@@ -721,6 +738,7 @@ async def main() -> None:
     # 初始化 CPU 统计
     psutil.cpu_percent(interval=None)
 
+    # 启动 WebSocket 服务器
     async with websockets.serve(handle_client, HOST, PORT, origins=None):
         await asyncio.get_running_loop().create_future()
 

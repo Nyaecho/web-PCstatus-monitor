@@ -235,16 +235,37 @@ export function useTelemetry(isExtraWide: boolean, requestedCategories: Telemetr
     }
   }, []);
 
+  const lastSubscriptionRef = useRef<{ interval: number; categories: string }>({ interval: 0, categories: '' });
+
   const sendSubscription = useCallback((ws: WebSocket) => {
+    const interval = sampleIntervalRef.current;
+    const categories = telemetryCategoriesRef.current;
+    const categoriesKey = [...categories].sort().join(',');
+    
+    // 检查配置是否变化
+    if (lastSubscriptionRef.current.interval === interval && 
+        lastSubscriptionRef.current.categories === categoriesKey) {
+      console.log('[WebSocket] 订阅配置未变化，跳过发送');
+      return;
+    }
+    
+    lastSubscriptionRef.current = { interval, categories: categoriesKey };
+    console.log('[WebSocket] 发送订阅请求:', { interval, categories });
     ws.send(JSON.stringify({
       type: "subscribe",
-      interval: sampleIntervalRef.current,
-      categories: telemetryCategoriesRef.current
+      interval,
+      categories
     }));
   }, []);
 
   const connectDevice = useCallback(() => {
     setIsRealModeIntent(true);
+
+    // 如果已有活跃连接，跳过
+    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+      console.log('[WebSocket] 已有活跃连接，跳过');
+      return;
+    }
 
     if (simulationIntervalRef.current) {
       clearInterval(simulationIntervalRef.current);
@@ -291,30 +312,19 @@ export function useTelemetry(isExtraWide: boolean, requestedCategories: Telemetr
             setSystemInfo(normalizeStaticInfo(payload.data));
           } else if (payload.type === "metrics") {
             const metrics = normalizeMetricPayload(payload.data, latestDataRef.current);
-            const cpuTemp = metrics.cpu_temp ?? Math.round(38 + metrics.cpu_percent * 0.25);
-            const gpuTemp = metrics.gpu_temp ?? Math.round(41 + (metrics.gpu_percent ?? 15) * 0.22);
-            const f1 = metrics.fan_speed_1 ?? Math.round(20 + metrics.cpu_percent * 0.7);
-            const f2 = metrics.fan_speed_2 ?? Math.round(22 + (metrics.gpu_percent ?? 15) * 0.65);
 
-            const enriched: MetricData = {
-              ...metrics,
-              cpu_temp: cpuTemp,
-              gpu_temp: gpuTemp,
-              fan_speed_1: Math.max(0, Math.min(100, f1)),
-              fan_speed_2: Math.max(0, Math.min(100, f2))
-            };
-            setLatestData(enriched);
+            setLatestData(metrics);
             appendHistoryData(
-              enriched.net_sent_speed_kb,
-              enriched.net_recv_speed_kb,
-              enriched.cpu_temp!,
-              enriched.gpu_temp!,
-              enriched.cpu_percent,
-              enriched.gpu_percent ?? 0,
-              enriched.ram_percent,
-              enriched.gpu_mem_percent ?? 0,
-              enriched.fan_speed_1 ?? 30,
-              enriched.fan_speed_2 ?? 35
+              metrics.net_sent_speed_kb,
+              metrics.net_recv_speed_kb,
+              metrics.cpu_temp,
+              metrics.gpu_temp,
+              metrics.cpu_percent,
+              metrics.gpu_percent ?? 0,
+              metrics.ram_percent,
+              metrics.gpu_mem_percent ?? 0,
+              metrics.fan_speed_1 ?? 0,
+              metrics.fan_speed_2 ?? 0
             );
           } else if (payload.type === "error") {
             console.error("WebSocket protocol error:", payload.data?.message);
@@ -453,30 +463,48 @@ export function useTelemetry(isExtraWide: boolean, requestedCategories: Telemetr
     }, sampleInterval * 1000);
   }, [sampleInterval, appendHistoryData, invalidateActiveSocket]);
 
+  // 初始化连接
   useEffect(() => {
-    if (isRealModeIntent) {
+    let isMounted = true;
+
+    if (isRealModeIntentRef.current) {
       connectDevice();
     } else {
       startSimulation();
     }
+
     return () => {
-      if (simulationIntervalRef.current) {
-        clearInterval(simulationIntervalRef.current);
-        simulationIntervalRef.current = null;
-      }
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
-      }
-      if (socketRef.current) {
-        invalidateActiveSocket();
-        try {
-          socketRef.current.close();
-        } catch (e) {}
-        socketRef.current = null;
-      }
+      isMounted = false;
+      // 延迟关闭，避免 StrictMode 双重挂载导致立即断开
+      setTimeout(() => {
+        if (!isMounted) {
+          if (simulationIntervalRef.current) {
+            clearInterval(simulationIntervalRef.current);
+            simulationIntervalRef.current = null;
+          }
+          if (reconnectTimerRef.current) {
+            clearTimeout(reconnectTimerRef.current);
+            reconnectTimerRef.current = null;
+          }
+          if (socketRef.current) {
+            invalidateActiveSocket();
+            try {
+              socketRef.current.close();
+            } catch (e) {}
+            socketRef.current = null;
+          }
+        }
+      }, 100);
     };
-  }, [isRealModeIntent, wsUrl, startSimulation, connectDevice, invalidateActiveSocket]);
+  }, []); // 空依赖，只执行一次
+
+  // wsUrl 变化时重新连接
+  useEffect(() => {
+    if (isRealModeIntentRef.current && socketRef.current) {
+      console.log('[WebSocket] URL 变化，重新连接');
+      connectDevice();
+    }
+  }, [wsUrl]);
 
   useEffect(() => {
     if (status === "CONNECTED" && socketRef.current) {
