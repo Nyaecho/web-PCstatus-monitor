@@ -1,0 +1,6 @@
+{
+  "name": "Device Performance Monitor",
+  "description": "A high-performance, real-time device diagnostics dashboard in a modern light-blue tech aesthetic, receiving live system metrics via local Python WebSocket integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

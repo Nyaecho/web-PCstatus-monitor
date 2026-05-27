@@ -1,0 +1,5 @@
+{
+  "wsUrl": "ws://localhost:8765",
+  "defaultMode": "SIMULATING",
+  "defaultSampleInterval": 3.0
+}

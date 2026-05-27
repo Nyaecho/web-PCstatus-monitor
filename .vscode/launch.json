@@ -1,0 +1,19 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Run system_info (build then run)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}\\.vscode\\out\\system_info.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": true,
+            "preLaunchTask": "Build system_info",
+            "MIMode": "gdb",
+            "miDebuggerPath": "D:\\App box\\MSYS2\\ucrt64\\bin\\gdb.exe"
+        }
+    ]
+}
