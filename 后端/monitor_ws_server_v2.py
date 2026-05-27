@@ -45,13 +45,126 @@ except ImportError:
 HOST = "0.0.0.0"
 PORT = 8765
 
+# 日志开关：True 显示详细日志，False 只显示基本连接信息
+VERBOSE_LOG = True
+
+
+# ============================================================================
+# 控制台颜色
+# ============================================================================
+
+class LogColors:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    MAGENTA = "\033[95m"
+    CYAN = "\033[96m"
+    WHITE = "\033[97m"
+
+
+def log_recv(client: str, msg_type: str, data: dict):
+    if not VERBOSE_LOG:
+        return
+    
+    timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    type_colors = {
+        "subscribe": LogColors.GREEN,
+        "unsubscribe": LogColors.YELLOW,
+        "get_static": LogColors.CYAN,
+    }
+    color = type_colors.get(msg_type, LogColors.WHITE)
+    
+    print(f"{LogColors.DIM}[{timestamp}]{LogColors.RESET} "
+          f"{LogColors.BLUE}← 收到{LogColors.RESET} "
+          f"{LogColors.BOLD}[{client}]{LogColors.RESET} "
+          f"{color}{msg_type}{LogColors.RESET}")
+    
+    data_str = json.dumps(data, ensure_ascii=False, indent=2)
+    for line in data_str.split('\n'):
+        print(f"           {LogColors.DIM}{line}{LogColors.RESET}")
+
+
+def log_send(client: str, msg_type: str, data: dict = None, data_summary: str = None):
+    if not VERBOSE_LOG:
+        return
+    
+    timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    type_colors = {
+        "welcome": LogColors.MAGENTA,
+        "subscribed": LogColors.GREEN,
+        "unsubscribed": LogColors.YELLOW,
+        "static_info": LogColors.CYAN,
+        "metrics": LogColors.WHITE,
+        "error": LogColors.RED,
+    }
+    color = type_colors.get(msg_type, LogColors.WHITE)
+    
+    summary = data_summary or ""
+    print(f"{LogColors.DIM}[{timestamp}]{LogColors.RESET} "
+          f"{LogColors.GREEN}→ 发送{LogColors.RESET} "
+          f"{LogColors.BOLD}[{client}]{LogColors.RESET} "
+          f"{color}{msg_type}{LogColors.RESET} "
+          f"{LogColors.DIM}{summary}{LogColors.RESET}")
+    
+    if msg_type == "metrics" and data:
+        metrics_summary = format_metrics_summary(data)
+        print(f"           {LogColors.DIM}{metrics_summary}{LogColors.RESET}")
+    elif data and msg_type != "metrics":
+        data_str = json.dumps(data, ensure_ascii=False, indent=2)
+        for line in data_str.split('\n'):
+            print(f"           {LogColors.DIM}{line}{LogColors.RESET}")
+
+
+def log_event(event_type: str, message: str):
+    """打印事件日志（始终显示）"""
+    timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    event_colors = {
+        "连接": LogColors.GREEN,
+        "断开": LogColors.YELLOW,
+        "丢失": LogColors.RED,
+        "错误": LogColors.RED,
+        "订阅": LogColors.GREEN,
+        "取消": LogColors.YELLOW,
+        "启动": LogColors.MAGENTA,
+        "信息": LogColors.CYAN,
+        "停止": LogColors.RED,
+    }
+    color = event_colors.get(event_type, LogColors.WHITE)
+    
+    print(f"{LogColors.DIM}[{timestamp}]{LogColors.RESET} "
+          f"{color}● {event_type}{LogColors.RESET} "
+          f"{message}")
+
+
+def format_metrics_summary(data: dict) -> str:
+    parts = []
+    if "cpu" in data:
+        parts.append(f"CPU:{data['cpu'].get('percent', 0)}%")
+    if "ram" in data:
+        parts.append(f"RAM:{data['ram'].get('percent', 0)}%")
+    if "gpu" in data:
+        parts.append(f"GPU:{data['gpu'].get('load_percent', 0)}%")
+    if "network" in data:
+        net = data["network"]["speed"]
+        parts.append(f"NET:↑{net.get('sent_kb', 0)}KB/s ↓{net.get('recv_kb', 0)}KB/s")
+    if "disk" in data:
+        parts.append(f"DISK:{data['disk'].get('percent', 0)}%")
+    if "battery" in data:
+        bat = data["battery"]
+        status = "充电" if bat.get("power_plugged") else "放电"
+        parts.append(f"BAT:{bat.get('percent', 0)}%{status}")
+    return " | ".join(parts)
+
 
 # ============================================================================
 # 指标类别枚举
 # ============================================================================
 
 class MetricCategory(str, Enum):
-    """可订阅的指标类别"""
     CPU = "cpu"
     RAM = "ram"
     GPU = "gpu"
@@ -67,19 +180,11 @@ class MetricCategory(str, Enum):
 
 @dataclass
 class ClientSubscription:
-    """客户端订阅配置"""
     websocket: object
+    client_id: str = ""
     interval: float = 1.0
-    categories: Set[str] = field(default_factory=lambda: {
-        MetricCategory.CPU,
-        MetricCategory.RAM,
-        MetricCategory.GPU,
-        MetricCategory.NETWORK,
-        MetricCategory.DISK,
-        MetricCategory.BATTERY,
-        MetricCategory.SYSTEM
-    })
-    last_update: float = 0.0
+    categories: Set[str] = field(default_factory=lambda: set(MetricCategory))
+    task: Optional[asyncio.Task] = None  # 每个客户端独立的推送任务
 
 
 # ============================================================================
@@ -89,12 +194,10 @@ class ClientSubscription:
 _clients: dict = {}  # websocket -> ClientSubscription
 _clients_lock = asyncio.Lock()
 
-# 网络速度计算状态
 _prev_net_sent = 0
 _prev_net_recv = 0
 _prev_net_time = 0.0
 
-# NVML 状态
 _nvml_ready = False
 _nvml_failed = False
 
@@ -104,21 +207,19 @@ _nvml_failed = False
 # ============================================================================
 
 def _init_net_counters() -> None:
-    """初始化网络计数器"""
     global _prev_net_sent, _prev_net_recv, _prev_net_time
     try:
         net_init = psutil.net_io_counters()
         _prev_net_sent = net_init.bytes_sent
         _prev_net_recv = net_init.bytes_recv
-        _prev_net_time = time.time()
+        _prev_net_time = time.monotonic()
     except Exception:
         _prev_net_sent = 0
         _prev_net_recv = 0
-        _prev_net_time = time.time()
+        _prev_net_time = time.monotonic()
 
 
 def _init_nvml() -> None:
-    """初始化 NVML"""
     global _nvml_ready, _nvml_failed
     if not HAS_NVML or _nvml_ready or _nvml_failed:
         return
@@ -134,14 +235,12 @@ def _init_nvml() -> None:
 # ============================================================================
 
 def _get_disk_root() -> str:
-    """获取系统盘根目录"""
     if os.name == "nt":
         return os.path.splitdrive(os.path.abspath(os.sep))[0] + os.sep
     return "/"
 
 
 def collect_static_info() -> dict:
-    """采集静态系统信息（启动时调用一次）"""
     try:
         boot_time_timestamp = psutil.boot_time()
         boot_time = datetime.datetime.fromtimestamp(boot_time_timestamp)
@@ -158,17 +257,13 @@ def collect_static_info() -> dict:
     except Exception:
         disk_total_gb = 0.0
 
-    # CPU 详细信息
     cpu_model = platform.processor() or "Unknown Processor"
     cpu_cores_physical = psutil.cpu_count(logical=False) or 0
     cpu_cores_logical = psutil.cpu_count(logical=True) or 0
     cpu_freq = psutil.cpu_freq()
     cpu_freq_max = f"{cpu_freq.max:.1f} MHz" if cpu_freq else "N/A"
-
-    # 内存详细信息
     ram_total_gb = round(psutil.virtual_memory().total / (1024 ** 3), 2)
 
-    # GPU 信息
     gpu_list = []
     if HAS_GPU:
         try:
@@ -182,7 +277,6 @@ def collect_static_info() -> dict:
         except Exception:
             pass
 
-    # WMI GPU 信息（Windows）
     if platform.system() == "Windows":
         try:
             import wmi
@@ -206,12 +300,8 @@ def collect_static_info() -> dict:
             "cores_logical": cpu_cores_logical,
             "freq_max": cpu_freq_max
         },
-        "ram": {
-            "total_gb": ram_total_gb
-        },
-        "disk": {
-            "total_gb": disk_total_gb
-        },
+        "ram": {"total_gb": ram_total_gb},
+        "disk": {"total_gb": disk_total_gb},
         "gpu": gpu_list,
         "system": {
             "boot_time": boot_time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -222,10 +312,7 @@ def collect_static_info() -> dict:
 
 
 def collect_cpu_metrics() -> dict:
-    """采集 CPU 指标"""
     cpu_percent = psutil.cpu_percent(interval=None)
-    
-    # CPU 温度
     cpu_temp = None
     try:
         temps = psutil.sensors_temperatures()
@@ -241,7 +328,6 @@ def collect_cpu_metrics() -> dict:
     except Exception:
         pass
 
-    # CPU 频率
     cpu_freq = psutil.cpu_freq()
     cpu_freq_current = round(cpu_freq.current, 1) if cpu_freq else None
 
@@ -253,7 +339,6 @@ def collect_cpu_metrics() -> dict:
 
 
 def collect_ram_metrics() -> dict:
-    """采集内存指标"""
     vm = psutil.virtual_memory()
     return {
         "percent": round(vm.percent, 1),
@@ -264,8 +349,6 @@ def collect_ram_metrics() -> dict:
 
 
 def collect_gpu_metrics() -> Optional[dict]:
-    """采集 GPU 指标"""
-    # 尝试 NVML
     if HAS_NVML:
         _init_nvml()
         if _nvml_ready:
@@ -287,27 +370,17 @@ def collect_gpu_metrics() -> Optional[dict]:
             except Exception:
                 pass
 
-    # 尝试 nvidia-smi
     try:
         result = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total",
-                "--format=csv,noheader,nounits"
-            ],
-            capture_output=True,
-            text=True,
-            timeout=1.5
+            ["nvidia-smi", "--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=1.5
         )
         if result.returncode == 0:
             line = result.stdout.strip().splitlines()[0].strip()
             if line:
                 parts = [p.strip() for p in line.split(",")]
                 if len(parts) >= 4:
-                    util = float(parts[0])
-                    temp = float(parts[1])
-                    mem_used = float(parts[2])
-                    mem_total = float(parts[3])
+                    util, temp, mem_used, mem_total = float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3])
                     mem_percent = (mem_used / mem_total) * 100 if mem_total else 0.0
                     return {
                         "load_percent": round(util, 1),
@@ -321,7 +394,6 @@ def collect_gpu_metrics() -> Optional[dict]:
     except Exception:
         pass
 
-    # 尝试 GPUtil
     if HAS_GPU:
         try:
             gpus = GPUtil.getGPUs()
@@ -343,7 +415,6 @@ def collect_gpu_metrics() -> Optional[dict]:
 
 
 def collect_network_metrics() -> dict:
-    """采集网络指标"""
     global _prev_net_sent, _prev_net_recv, _prev_net_time
 
     net_sent_speed_kb = 0.0
@@ -353,7 +424,7 @@ def collect_network_metrics() -> dict:
 
     try:
         curr_net = psutil.net_io_counters()
-        curr_time = time.time()
+        curr_time = time.monotonic()
         dt = curr_time - _prev_net_time if curr_time > _prev_net_time else 0.001
 
         sent_bytes = curr_net.bytes_sent - _prev_net_sent
@@ -374,19 +445,12 @@ def collect_network_metrics() -> dict:
         pass
 
     return {
-        "speed": {
-            "sent_kb": net_sent_speed_kb,
-            "recv_kb": net_recv_speed_kb
-        },
-        "total": {
-            "sent_gb": total_sent_gb,
-            "recv_gb": total_recv_gb
-        }
+        "speed": {"sent_kb": net_sent_speed_kb, "recv_kb": net_recv_speed_kb},
+        "total": {"sent_gb": total_sent_gb, "recv_gb": total_recv_gb}
     }
 
 
 def collect_disk_metrics() -> dict:
-    """采集磁盘指标"""
     disk_root = _get_disk_root()
     try:
         disk = psutil.disk_usage(disk_root)
@@ -397,16 +461,10 @@ def collect_disk_metrics() -> dict:
             "total_gb": round(disk.total / (1024 ** 3), 2)
         }
     except Exception:
-        return {
-            "percent": 0,
-            "used_gb": 0,
-            "free_gb": 0,
-            "total_gb": 0
-        }
+        return {"percent": 0, "used_gb": 0, "free_gb": 0, "total_gb": 0}
 
 
 def collect_battery_metrics() -> Optional[dict]:
-    """采集电池指标"""
     try:
         battery = psutil.sensors_battery()
         if battery:
@@ -421,7 +479,6 @@ def collect_battery_metrics() -> Optional[dict]:
 
 
 def collect_system_metrics() -> dict:
-    """采集系统指标"""
     try:
         boot_time_timestamp = psutil.boot_time()
         boot_time = datetime.datetime.fromtimestamp(boot_time_timestamp)
@@ -436,71 +493,109 @@ def collect_system_metrics() -> dict:
     }
 
 
-# ============================================================================
-# 指标采集调度器
-# ============================================================================
-
 def collect_metrics(categories: Set[str]) -> dict:
-    """根据订阅的类别采集指标"""
     result = {}
-
     if MetricCategory.CPU in categories:
         result["cpu"] = collect_cpu_metrics()
-
     if MetricCategory.RAM in categories:
         result["ram"] = collect_ram_metrics()
-
     if MetricCategory.GPU in categories:
         gpu_data = collect_gpu_metrics()
         if gpu_data:
             result["gpu"] = gpu_data
-
     if MetricCategory.NETWORK in categories:
         result["network"] = collect_network_metrics()
-
     if MetricCategory.DISK in categories:
         result["disk"] = collect_disk_metrics()
-
     if MetricCategory.BATTERY in categories:
         battery_data = collect_battery_metrics()
         if battery_data:
             result["battery"] = battery_data
-
     if MetricCategory.SYSTEM in categories:
         result["system"] = collect_system_metrics()
-
     return result
+
+
+# ============================================================================
+# 客户端推送任务
+# ============================================================================
+
+async def client_push_task(sub: ClientSubscription):
+    """单个客户端的独立推送任务"""
+    try:
+        # 首次立即发送
+        metrics = collect_metrics(sub.categories)
+        msg = {"type": "metrics", "data": metrics}
+        await sub.websocket.send(json.dumps(msg, ensure_ascii=False))
+        log_send(sub.client_id, "metrics", metrics)
+
+        # 循环等待并发送
+        while True:
+            # 等待指定间隔，期间不调用任何接口
+            await asyncio.sleep(sub.interval)
+            
+            # 到达时间后才采集数据
+            metrics = collect_metrics(sub.categories)
+            msg = {"type": "metrics", "data": metrics}
+            await sub.websocket.send(json.dumps(msg, ensure_ascii=False))
+            log_send(sub.client_id, "metrics", metrics)
+
+    except asyncio.CancelledError:
+        # 任务被取消（客户端断开）
+        pass
+    except websockets.exceptions.ConnectionClosed:
+        log_event("丢失", f"{sub.client_id} 连接已断开")
+    except Exception as exc:
+        log_event("错误", f"{sub.client_id} 推送任务出错: {exc}")
+    finally:
+        # 清理订阅
+        async with _clients_lock:
+            if sub.websocket in _clients:
+                del _clients[sub.websocket]
 
 
 # ============================================================================
 # 消息处理
 # ============================================================================
 
-async def handle_subscribe(client_ws, data: dict) -> dict:
-    """处理订阅请求"""
+async def handle_subscribe(client_ws, client_id: str, data: dict) -> dict:
     interval = max(0.1, min(60.0, float(data.get("interval", 1.0))))
     
-    # 解析订阅的类别
     categories = set()
     requested = data.get("categories", [])
     
     if not requested:
-        # 如果没有指定，订阅所有类别
         categories = set(MetricCategory)
     else:
         for cat in requested:
             try:
                 categories.add(MetricCategory(cat))
             except ValueError:
-                pass  # 忽略无效类别
+                pass
+
+    # 取消旧的推送任务（如果有）
+    async with _clients_lock:
+        if client_ws in _clients:
+            old_sub = _clients[client_ws]
+            if old_sub.task and not old_sub.task.done():
+                old_sub.task.cancel()
+
+    # 创建新的订阅
+    sub = ClientSubscription(
+        websocket=client_ws,
+        client_id=client_id,
+        interval=interval,
+        categories=categories
+    )
+
+    # 启动独立的推送任务
+    sub.task = asyncio.create_task(client_push_task(sub))
 
     async with _clients_lock:
-        _clients[client_ws] = ClientSubscription(
-            websocket=client_ws,
-            interval=interval,
-            categories=categories
-        )
+        _clients[client_ws] = sub
 
+    log_event("订阅", f"{client_id} 订阅了 {len(categories)} 个类别, 间隔 {interval}s")
+    
     return {
         "type": "subscribed",
         "data": {
@@ -510,35 +605,42 @@ async def handle_subscribe(client_ws, data: dict) -> dict:
     }
 
 
-async def handle_unsubscribe(client_ws) -> dict:
-    """处理取消订阅请求"""
+async def handle_unsubscribe(client_ws, client_id: str) -> dict:
     async with _clients_lock:
         if client_ws in _clients:
+            sub = _clients[client_ws]
+            # 取消推送任务
+            if sub.task and not sub.task.done():
+                sub.task.cancel()
             del _clients[client_ws]
     
-    return {
-        "type": "unsubscribed",
-        "data": {}
-    }
+    log_event("取消", f"{client_id} 取消了订阅")
+    
+    return {"type": "unsubscribed", "data": {}}
 
 
-async def handle_message(client_ws, raw_msg: str) -> Optional[dict]:
-    """处理客户端消息"""
+async def handle_message(client_ws, client_id: str, raw_msg: str) -> Optional[dict]:
     try:
         msg = json.loads(raw_msg)
     except json.JSONDecodeError:
+        log_event("错误", f"{client_id} 发送了无效的 JSON")
         return {"type": "error", "data": {"message": "Invalid JSON"}}
 
-    msg_type = msg.get("type")
+    msg_type = msg.get("type", "unknown")
+    log_recv(client_id, msg_type, msg)
 
     if msg_type == "subscribe":
-        return await handle_subscribe(client_ws, msg)
+        response = await handle_subscribe(client_ws, client_id, msg)
     elif msg_type == "unsubscribe":
-        return await handle_unsubscribe(client_ws)
+        response = await handle_unsubscribe(client_ws, client_id)
     elif msg_type == "get_static":
-        return {"type": "static_info", "data": collect_static_info()}
+        response = {"type": "static_info", "data": collect_static_info()}
     else:
-        return {"type": "error", "data": {"message": f"Unknown message type: {msg_type}"}}
+        log_event("错误", f"{client_id} 发送了未知消息类型: {msg_type}")
+        response = {"type": "error", "data": {"message": f"Unknown message type: {msg_type}"}}
+
+    log_send(client_id, response["type"], response.get("data"))
+    return response
 
 
 # ============================================================================
@@ -546,76 +648,41 @@ async def handle_message(client_ws, raw_msg: str) -> Optional[dict]:
 # ============================================================================
 
 async def handle_client(websocket):
-    """处理 WebSocket 客户端连接"""
     client_ip, client_port = websocket.remote_address[:2]
-    print(f"[连接] {client_ip}:{client_port}")
+    client_id = f"{client_ip}:{client_port}"
+    
+    log_event("连接", f"{client_id} 已连接")
 
-    # 发送欢迎消息和静态信息
+    welcome_msg = {
+        "type": "welcome",
+        "data": {
+            "version": "2.0",
+            "supported_categories": [c.value for c in MetricCategory]
+        }
+    }
+    await websocket.send(json.dumps(welcome_msg, ensure_ascii=False))
+    log_send(client_id, "welcome", welcome_msg["data"])
+
     try:
-        await websocket.send(json.dumps({
-            "type": "welcome",
-            "data": {
-                "version": "2.0",
-                "supported_categories": [c.value for c in MetricCategory]
-            }
-        }, ensure_ascii=False))
-
-        # 等待客户端订阅
         async for raw_msg in websocket:
-            response = await handle_message(websocket, raw_msg)
+            response = await handle_message(websocket, client_id, raw_msg)
             if response:
                 await websocket.send(json.dumps(response, ensure_ascii=False))
-
     except websockets.exceptions.ConnectionClosedOK:
-        print(f"[断开] {client_ip}:{client_port}")
-    except websockets.exceptions.ConnectionClosedError:
-        print(f"[丢失] {client_ip}:{client_port}")
+        log_event("断开", f"{client_id} 正常断开连接")
+    except websockets.exceptions.ConnectionClosedError as e:
+        log_event("丢失", f"{client_id} 连接异常断开: {e}")
     except Exception as exc:
-        print(f"[错误] {client_ip}:{client_port}: {exc}")
+        log_event("错误", f"{client_id} 发生错误: {exc}")
     finally:
+        # 清理：取消推送任务并移除订阅
         async with _clients_lock:
             if websocket in _clients:
+                sub = _clients[websocket]
+                if sub.task and not sub.task.done():
+                    sub.task.cancel()
                 del _clients[websocket]
-
-
-async def metrics_broadcaster():
-    """定时广播指标给所有订阅的客户端"""
-    # 初始化 CPU 统计
-    psutil.cpu_percent(interval=None)
-    await asyncio.sleep(0.1)
-
-    while True:
-        await asyncio.sleep(0.05)  # 50ms 检查一次
-
-        now = time.monotonic()
-        
-        async with _clients_lock:
-            clients_snapshot = list(_clients.items())
-
-        for ws, sub in clients_snapshot:
-            # 检查是否到达更新时间
-            if (now - sub.last_update) < sub.interval:
-                continue
-
-            try:
-                # 采集指标
-                metrics = collect_metrics(sub.categories)
-                
-                # 发送
-                await ws.send(json.dumps({
-                    "type": "metrics",
-                    "data": metrics
-                }, ensure_ascii=False))
-
-                # 更新时间
-                sub.last_update = now
-
-            except websockets.exceptions.ConnectionClosed:
-                async with _clients_lock:
-                    if ws in _clients:
-                        del _clients[ws]
-            except Exception as exc:
-                print(f"[广播错误] {exc}")
+        log_event("断开", f"{client_id} 已从订阅列表移除")
 
 
 # ============================================================================
@@ -626,21 +693,33 @@ async def main() -> None:
     _init_net_counters()
     _init_nvml()
 
-    print("=" * 50)
-    print("  设备监控 WebSocket 服务器 v2.0")
-    print("=" * 50)
-    print(f"监听地址: ws://{HOST}:{PORT}")
-    print(f"GPU 支持: {'NVML' if _nvml_ready else 'GPUtil' if HAS_GPU else 'nvidia-smi'}")
-    print("按 Ctrl+C 停止服务器")
-    print("=" * 50)
+    print()
+    print(f"{LogColors.MAGENTA}{LogColors.BOLD}{'=' * 60}{LogColors.RESET}")
+    print(f"{LogColors.MAGENTA}{LogColors.BOLD}  设备监控 WebSocket 服务器 v2.0{LogColors.RESET}")
+    print(f"{LogColors.MAGENTA}{LogColors.BOLD}{'=' * 60}{LogColors.RESET}")
+    print()
+    print(f"  {LogColors.CYAN}监听地址:{LogColors.RESET} ws://{HOST}:{PORT}")
+    print(f"  {LogColors.CYAN}GPU 支持:{LogColors.RESET} {'NVML' if _nvml_ready else 'GPUtil' if HAS_GPU else 'nvidia-smi'}")
+    print(f"  {LogColors.CYAN}详细日志:{LogColors.RESET} {'开启' if VERBOSE_LOG else '关闭'}")
+    print(f"  {LogColors.CYAN}推送模式:{LogColors.RESET} 延迟后调用（非轮询）")
+    print()
+    print(f"  {LogColors.DIM}按 Ctrl+C 停止服务器{LogColors.RESET}")
+    print()
+    print(f"{LogColors.MAGENTA}{'=' * 60}{LogColors.RESET}")
+    print()
 
-    # 启动 WebSocket 服务器和广播任务
+    # 初始化 CPU 统计
+    psutil.cpu_percent(interval=None)
+
     async with websockets.serve(handle_client, HOST, PORT, origins=None):
-        await metrics_broadcaster()
+        # 保持服务器运行
+        await asyncio.get_running_loop().create_future()
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n服务器已停止。")
+        print()
+        log_event("停止", "服务器已停止")
+        print()
