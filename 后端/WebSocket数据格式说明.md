@@ -6,7 +6,9 @@
 
 - **服务器地址**: `ws://localhost:8765`
 - **协议版本**: 2.0
-- **特点**: 支持前端按需订阅指标类别，减少不必要的数据传输
+- **特点**: 
+  - 支持前端按需订阅指标类别，减少不必要的数据传输
+  - 获取失败的数据统一返回 0，不返回 null
 
 ---
 
@@ -130,7 +132,7 @@
   "data": {
     "cpu": {
       "percent": 17.0,
-      "temp": null,
+      "temp": 0,
       "freq_current_mhz": 3801.0
     },
     "ram": {
@@ -142,6 +144,8 @@
     "gpu": {
       "load_percent": 17.0,
       "temp": 43,
+      "freq_mhz": 2100,
+      "mem_freq_mhz": 5001,
       "memory": {
         "used_gb": 1.3,
         "total_gb": 8.0,
@@ -167,7 +171,7 @@
     "battery": {
       "percent": 98,
       "power_plugged": true,
-      "secs_left": null
+      "secs_left": 0
     },
     "system": {
       "up_time": "20:09:31",
@@ -219,7 +223,7 @@
 |------|------|
 | `cpu` | CPU 占用率、温度、频率 |
 | `ram` | 内存使用情况 |
-| `gpu` | GPU 负载、温度、显存（需要 NVIDIA GPU） |
+| `gpu` | GPU 负载、温度、频率、显存 |
 | `network` | 网络速度、流量统计 |
 | `disk` | 系统盘使用情况 |
 | `battery` | 电池电量、充电状态 |
@@ -254,8 +258,8 @@
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `cpu.percent` | float | CPU 总占用率 (0-100) |
-| `cpu.temp` | int\|null | CPU 温度 (°C)，Windows 上可能为 null |
-| `cpu.freq_current_mhz` | float\|null | 当前频率 (MHz) |
+| `cpu.temp` | int | CPU 温度 (°C)，获取失败返回 0 |
+| `cpu.freq_current_mhz` | float | 当前频率 (MHz)，获取失败返回 0 |
 
 ### 5.2 内存指标
 
@@ -271,12 +275,14 @@
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `gpu.load_percent` | float | GPU 负载 (0-100) |
-| `gpu.temp` | int | GPU 温度 (°C) |
+| `gpu.temp` | int | GPU 温度 (°C)，获取失败返回 0 |
+| `gpu.freq_mhz` | int | GPU 核心频率 (MHz)，获取失败返回 0 |
+| `gpu.mem_freq_mhz` | int | GPU 显存频率 (MHz)，获取失败返回 0 |
 | `gpu.memory.used_gb` | float | 显存已用 (GB) |
 | `gpu.memory.total_gb` | float | 显存总量 (GB) |
 | `gpu.memory.percent` | float | 显存使用率 (0-100) |
 
-**注意**: GPU 数据仅在检测到 NVIDIA GPU 时返回。如果没有 GPU，`metrics` 中将不包含 `gpu` 字段。
+**注意**: GPU 数据始终返回，即使没有检测到 GPU 也会返回全 0 字典。
 
 ### 5.4 网络指标
 
@@ -302,9 +308,9 @@
 |------|------|------|
 | `battery.percent` | int | 电量百分比 (0-100) |
 | `battery.power_plugged` | bool | 是否正在充电 |
-| `battery.secs_left` | int\|null | 剩余时间 (秒)，充电中或未知时为 null |
+| `battery.secs_left` | int | 剩余时间 (秒)，充电中或未知时返回 0 |
 
-**注意**: 台式机可能没有电池数据，`metrics` 中将不包含 `battery` 字段。
+**注意**: 电池数据始终返回，台式机返回默认值 `{"percent": 0, "power_plugged": false, "secs_left": 0}`。
 
 ### 5.7 系统指标
 
@@ -404,9 +410,8 @@ monitor.on('static_info', (data) => {
 monitor.on('metrics', (data) => {
   console.log('CPU:', data.cpu.percent + '%');
   console.log('内存:', data.ram.percent + '%');
-  if (data.gpu) {
-    console.log('GPU:', data.gpu.load_percent + '%');
-  }
+  console.log('GPU:', data.gpu.load_percent + '%');
+  console.log('GPU 频率:', data.gpu.freq_mhz + ' MHz');
 });
 
 monitor.connect();
@@ -434,7 +439,7 @@ monitor.subscribe([], 2.0);  // 空数组表示订阅所有类别
    - 实时图表: 0.5-1 秒
    - 精细监控: 0.1-0.5 秒
 3. **使用 `get_static`**: 静态信息只需获取一次，不要定时请求
-4. **处理 null 值**: 某些指标（如 CPU 温度、GPU）可能为 null，前端需做兼容处理
+4. **处理 0 值**: 获取失败的数据返回 0，前端可据此判断是否显示
 
 ---
 
@@ -446,8 +451,7 @@ monitor.subscribe([], 2.0);  // 空数组表示订阅所有类别
 | 未知消息类型 | 返回 error 消息 |
 | 无效的 category | 忽略，不报错 |
 | interval 超出范围 | 自动修正到 0.1-60.0 |
-| GPU 不可用 | metrics 中不包含 gpu 字段 |
-| 电池不存在 | metrics 中不包含 battery 字段 |
+| 硬件数据获取失败 | 返回 0 或默认值 |
 
 ---
 
@@ -455,5 +459,5 @@ monitor.subscribe([], 2.0);  // 空数组表示订阅所有类别
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
-| 2.0 | 2026-05-27 | 重构为按需订阅模式，支持多类别订阅 |
-| 1.0 | - | 初始版本，固定推送所有指标 |
+| 2.0 | 2026-05-28 | 重构为按需订阅模式；获取失败返回 0 而非 null；新增 GPU 频率字段 |
+| 1.0 | 2026-05-27 | 初始版本，固定推送所有指标 |

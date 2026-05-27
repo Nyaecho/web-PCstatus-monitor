@@ -348,7 +348,7 @@ def collect_ram_metrics() -> dict:
     }
 
 
-def collect_gpu_metrics() -> Optional[dict]:
+def collect_gpu_metrics() -> dict:
     if HAS_NVML:
         _init_nvml()
         if _nvml_ready:
@@ -358,9 +358,20 @@ def collect_gpu_metrics() -> Optional[dict]:
                 mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
                 temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
                 mem_percent = (mem.used / mem.total) * 100 if mem.total else 0.0
+                
+                # 获取 GPU 频率
+                try:
+                    graphics_clock = pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_GRAPHICS)
+                    mem_clock = pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_MEM)
+                except:
+                    graphics_clock = 0
+                    mem_clock = 0
+                
                 return {
                     "load_percent": round(util.gpu, 1),
                     "temp": int(temp),
+                    "freq_mhz": int(graphics_clock),
+                    "mem_freq_mhz": int(mem_clock),
                     "memory": {
                         "used_gb": round(mem.used / (1024 ** 3), 2),
                         "total_gb": round(mem.total / (1024 ** 3), 2),
@@ -372,19 +383,21 @@ def collect_gpu_metrics() -> Optional[dict]:
 
     try:
         result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"],
+            ["nvidia-smi", "--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total,clocks.current.graphics,clocks.current.memory", "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=1.5
         )
         if result.returncode == 0:
             line = result.stdout.strip().splitlines()[0].strip()
             if line:
                 parts = [p.strip() for p in line.split(",")]
-                if len(parts) >= 4:
-                    util, temp, mem_used, mem_total = float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3])
+                if len(parts) >= 6:
+                    util, temp, mem_used, mem_total, gpu_clock, mem_clock = float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4]), float(parts[5])
                     mem_percent = (mem_used / mem_total) * 100 if mem_total else 0.0
                     return {
                         "load_percent": round(util, 1),
                         "temp": int(temp),
+                        "freq_mhz": int(gpu_clock),
+                        "mem_freq_mhz": int(mem_clock),
                         "memory": {
                             "used_gb": round(mem_used / (1024 ** 3), 2),
                             "total_gb": round(mem_total / (1024 ** 3), 2),
@@ -402,6 +415,8 @@ def collect_gpu_metrics() -> Optional[dict]:
                 return {
                     "load_percent": round(gpu.load * 100, 1),
                     "temp": int(gpu.temperature),
+                    "freq_mhz": 0,
+                    "mem_freq_mhz": 0,
                     "memory": {
                         "used_gb": round(gpu.memoryUsed / 1024, 2),
                         "total_gb": round(gpu.memoryTotal / 1024, 2),
@@ -414,6 +429,8 @@ def collect_gpu_metrics() -> Optional[dict]:
     return {
         "load_percent": 0,
         "temp": 0,
+        "freq_mhz": 0,
+        "mem_freq_mhz": 0,
         "memory": {
             "used_gb": 0,
             "total_gb": 0,
