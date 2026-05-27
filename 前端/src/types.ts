@@ -39,6 +39,9 @@ export interface MetricData {
   net_recv_speed_kb: number; // received in KB/s
   gpu_percent?: number;
   gpu_temp?: number;
+  cpu_freq_mhz?: number;
+  gpu_freq_mhz?: number;
+  gpu_mem_freq_mhz?: number;
   cpu_temp?: number;
   fan_speed_1?: number;
   fan_speed_2?: number;
@@ -89,6 +92,8 @@ export interface BackendMetricPayload {
   gpu?: {
     load_percent?: number;
     temp?: number;
+    freq_mhz?: number;
+    mem_freq_mhz?: number;
     memory?: {
       used_gb?: number;
       total_gb?: number;

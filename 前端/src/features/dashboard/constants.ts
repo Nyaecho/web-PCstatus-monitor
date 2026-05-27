@@ -1,4 +1,4 @@
-import { MetricData, SystemInfo, TelemetryCategory } from "../../../types";
+import { MetricData, SystemInfo, TelemetryCategory } from "../../types";
 
 export interface NetworkHistoryPoint {
   timestampMs: number;
@@ -11,6 +11,9 @@ export interface NetworkHistoryPoint {
   gpu_percent?: number;
   ram_percent?: number;
   gpu_mem_percent?: number;
+  cpu_freq_mhz?: number;
+  gpu_freq_mhz?: number;
+  gpu_mem_freq_mhz?: number;
   fan_speed_1?: number;
   fan_speed_2?: number;
   disk_percent?: number;
@@ -32,6 +35,9 @@ export type DashboardMetricKey =
   | "gpu_percent"
   | "ram_percent"
   | "gpu_mem_percent"
+  | "cpu_freq_mhz"
+  | "gpu_freq_mhz"
+  | "gpu_mem_freq_mhz"
   | "disk_percent"
   | "battery_percent"
   | "net_sent"
@@ -63,7 +69,7 @@ export interface DashboardMetricOption {
   shortLabel: string;
   unit: string;
   color: string;
-  valueType: "percent" | "temperature" | "speed";
+  valueType: "percent" | "temperature" | "speed" | "frequency";
 }
 
 export interface DashboardComponentConfigItem {
@@ -88,9 +94,12 @@ export const defaultTelemetryCategories: TelemetryCategory[] = ["cpu", "ram", "g
 
 export const dashboardMetricOptions: Record<DashboardMetricKey, DashboardMetricOption> = {
   cpu_percent: { key: "cpu_percent", label: "CPU 负载", shortLabel: "CPU", unit: "%", color: "#2563eb", valueType: "percent" },
+  cpu_freq_mhz: { key: "cpu_freq_mhz", label: "CPU 频率", shortLabel: "CPU频率", unit: "MHz", color: "#7c3aed", valueType: "frequency" },
   gpu_percent: { key: "gpu_percent", label: "GPU 负载", shortLabel: "GPU", unit: "%", color: "#10b981", valueType: "percent" },
   ram_percent: { key: "ram_percent", label: "RAM 占用", shortLabel: "RAM", unit: "%", color: "#6366f1", valueType: "percent" },
   gpu_mem_percent: { key: "gpu_mem_percent", label: "显存占用", shortLabel: "显存", unit: "%", color: "#14b8a6", valueType: "percent" },
+  gpu_freq_mhz: { key: "gpu_freq_mhz", label: "GPU 核心频率", shortLabel: "GPU频率", unit: "MHz", color: "#8b5cf6", valueType: "frequency" },
+  gpu_mem_freq_mhz: { key: "gpu_mem_freq_mhz", label: "GPU 显存频率", shortLabel: "显存频率", unit: "MHz", color: "#0ea5e9", valueType: "frequency" },
   disk_percent: { key: "disk_percent", label: "磁盘占用", shortLabel: "磁盘", unit: "%", color: "#f59e0b", valueType: "percent" },
   battery_percent: { key: "battery_percent", label: "电池电量", shortLabel: "电池", unit: "%", color: "#22c55e", valueType: "percent" },
   net_sent: { key: "net_sent", label: "上传速率", shortLabel: "上传", unit: "KB/s", color: "#ef4444", valueType: "speed" },
@@ -121,11 +130,14 @@ export const defaultDashboardComponentConfig: DashboardComponentConfig = {
 export const metricToTelemetryCategory: Record<DashboardMetricKey, TelemetryCategory> = {
   cpu_percent: "cpu",
   cpu_temp: "cpu",
+  cpu_freq_mhz: "cpu",
   fan_speed_1: "cpu",
   ram_percent: "ram",
   gpu_percent: "gpu",
   gpu_temp: "gpu",
   gpu_mem_percent: "gpu",
+  gpu_freq_mhz: "gpu",
+  gpu_mem_freq_mhz: "gpu",
   fan_speed_2: "gpu",
   net_sent: "network",
   net_recv: "network",
@@ -154,6 +166,7 @@ export const defaultSystemInfo: SystemInfo = {
 export const defaultMetricData: MetricData = {
   cpu_percent: 18.4,
   cpu_cores_percent: [12, 24, 8, 32, 16, 20, 10, 24, 8, 38, 14, 22, 10, 26, 8, 18],
+  cpu_freq_mhz: 3800,
   ram_percent: 41.2,
   ram_used_gb: 9.89,
   ram_total_gb: 24.0,
@@ -168,6 +181,8 @@ export const defaultMetricData: MetricData = {
   cpu_temp: 42,
   fan_speed_1: 32,
   fan_speed_2: 38,
+  gpu_freq_mhz: 2100,
+  gpu_mem_freq_mhz: 5000,
   gpu_mem_percent: 28.5,
   processes: [],
   timestamp: "14:06:12"

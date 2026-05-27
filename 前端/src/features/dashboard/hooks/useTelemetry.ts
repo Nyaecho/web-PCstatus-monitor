@@ -51,6 +51,9 @@ const normalizeMetricPayload = (payload: BackendMetricPayload, previous: MetricD
     net_recv_speed_kb: payload.network?.speed?.recv_kb ?? previous.net_recv_speed_kb,
     gpu_percent: payload.gpu?.load_percent ?? previous.gpu_percent,
     gpu_temp: payload.gpu?.temp ?? previous.gpu_temp,
+    cpu_freq_mhz: payload.cpu?.freq_current_mhz ?? previous.cpu_freq_mhz,
+    gpu_freq_mhz: payload.gpu?.freq_mhz ?? previous.gpu_freq_mhz,
+    gpu_mem_freq_mhz: payload.gpu?.mem_freq_mhz ?? previous.gpu_mem_freq_mhz,
     cpu_temp: payload.cpu?.temp ?? previous.cpu_temp,
     gpu_mem_percent: payload.gpu?.memory?.percent ?? previous.gpu_mem_percent,
     timestamp
@@ -162,28 +165,14 @@ export function useTelemetry(isExtraWide: boolean, requestedCategories: Telemetr
             gpu_percent: Math.round(10 + Math.abs(Math.cos(secs / 15) * 20) + Math.random() * 5),
             ram_percent: Math.round(40 + Math.abs(Math.sin(secs / 20) * 2) + Math.random() * 0.5),
             gpu_mem_percent: Math.round(28 + Math.abs(Math.cos(secs / 25) * 1.5) + Math.random() * 0.5),
+            cpu_freq_mhz: Math.round(3800 + Math.sin(secs / 11) * 90 + Math.random() * 10),
+            gpu_freq_mhz: Math.round(2100 + Math.cos(secs / 13) * 120 + Math.random() * 10),
+            gpu_mem_freq_mhz: Math.round(5000 + Math.sin(secs / 17) * 140 + Math.random() * 10),
             fan_speed_1: Math.round(30 + Math.abs(Math.sin(secs / 10) * 20) + Math.random() * 2),
             fan_speed_2: Math.round(35 + Math.abs(Math.cos(secs / 12) * 15) + Math.random() * 2),
             disk_percent: latestDataRef.current.disk_percent,
             battery_percent: latestDataRef.current.battery_percent
           };
-        })
-      );
-    } else {
-      setNetHistory((prev) =>
-        prev.map((pt) => {
-          const {
-            cpu_percent,
-            gpu_percent,
-            ram_percent,
-            gpu_mem_percent,
-            fan_speed_1,
-            fan_speed_2,
-            disk_percent,
-            battery_percent,
-            ...stripped
-          } = pt;
-          return stripped;
         })
       );
     }
@@ -198,6 +187,9 @@ export function useTelemetry(isExtraWide: boolean, requestedCategories: Telemetr
     gpu_percent: number,
     ram_percent: number,
     gpu_mem_percent: number,
+    cpu_freq_mhz: number,
+    gpu_freq_mhz: number,
+    gpu_mem_freq_mhz: number,
     fan_speed_1: number,
     fan_speed_2: number
   ) => {
@@ -213,14 +205,15 @@ export function useTelemetry(isExtraWide: boolean, requestedCategories: Telemetr
         gpu_temp: gpu_temp ?? 45,
         disk_percent: latestDataRef.current.disk_percent,
         battery_percent: latestDataRef.current.battery_percent,
-        ...(isExtraWide ? {
-          cpu_percent: cpu_percent ?? 10,
-          gpu_percent: gpu_percent ?? 5,
-          ram_percent: ram_percent ?? 40,
-          gpu_mem_percent: gpu_mem_percent ?? 28,
-          fan_speed_1: fan_speed_1 ?? 30,
-          fan_speed_2: fan_speed_2 ?? 35,
-        } : {})
+        cpu_percent: cpu_percent ?? 10,
+        gpu_percent: gpu_percent ?? 5,
+        ram_percent: ram_percent ?? 40,
+        gpu_mem_percent: gpu_mem_percent ?? 28,
+        cpu_freq_mhz: cpu_freq_mhz ?? latestDataRef.current.cpu_freq_mhz ?? 0,
+        gpu_freq_mhz: gpu_freq_mhz ?? 0,
+        gpu_mem_freq_mhz: gpu_mem_freq_mhz ?? 0,
+        fan_speed_1: fan_speed_1 ?? 30,
+        fan_speed_2: fan_speed_2 ?? 35,
       };
 
       return [...prev, newPoint].filter((pt) => pt.timestampMs >= cutoff);
@@ -323,6 +316,9 @@ export function useTelemetry(isExtraWide: boolean, requestedCategories: Telemetr
               metrics.gpu_percent ?? 0,
               metrics.ram_percent,
               metrics.gpu_mem_percent ?? 0,
+              metrics.cpu_freq_mhz ?? 0,
+              metrics.gpu_freq_mhz ?? 0,
+              metrics.gpu_mem_freq_mhz ?? 0,
               metrics.fan_speed_1 ?? 0,
               metrics.fan_speed_2 ?? 0
             );
@@ -421,6 +417,9 @@ export function useTelemetry(isExtraWide: boolean, requestedCategories: Telemetr
 
       const cpuTempSim = Math.round(38 + finalCpu * 0.26 + (Math.random() * 2 - 1));
       const gpuTempSim = Math.round(41 + finalGpu * 0.20 + (Math.random() * 2 - 1));
+      const cpuFreqSim = Math.round(3800 + (Math.random() * 120 - 60));
+      const gpuFreqSim = Math.round(2100 + finalGpu * 8 + (Math.random() * 30 - 15));
+      const gpuMemFreqSim = Math.round(5000 + finalGpu * 6 + (Math.random() * 30 - 15));
 
       const f1 = Math.round(22 + finalCpu * 0.65 + (Math.random() * 4 - 2));
       const f2 = Math.round(25 + finalGpu * 0.58 + (Math.random() * 4 - 2));
@@ -438,6 +437,9 @@ export function useTelemetry(isExtraWide: boolean, requestedCategories: Telemetr
         net_recv_speed_kb: roundVal(netRecv, 1),
         gpu_percent: finalGpu,
         gpu_temp: gpuTempSim,
+        cpu_freq_mhz: cpuFreqSim,
+        gpu_freq_mhz: gpuFreqSim,
+        gpu_mem_freq_mhz: gpuMemFreqSim,
         cpu_temp: cpuTempSim,
         fan_speed_1: Math.max(5, Math.min(100, f1)),
         fan_speed_2: Math.max(5, Math.min(100, f2)),
@@ -457,6 +459,9 @@ export function useTelemetry(isExtraWide: boolean, requestedCategories: Telemetr
         metrics.gpu_percent ?? 0,
         metrics.ram_percent,
         metrics.gpu_mem_percent ?? 0,
+        metrics.cpu_freq_mhz ?? 0,
+        metrics.gpu_freq_mhz ?? 0,
+        metrics.gpu_mem_freq_mhz ?? 0,
         metrics.fan_speed_1 ?? 30,
         metrics.fan_speed_2 ?? 35
       );

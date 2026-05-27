@@ -71,10 +71,6 @@ export function Dashboard() {
       <main className={`flex-1 flex flex-col gap-2.5 p-0.5 ${isExtraWide ? "" : "h-full overflow-hidden"}`}>
         <HardwareSummary
           latestData={telemetry.latestData}
-          chartData={chartData}
-          isExtraWide={isExtraWide}
-          timeWindowSeconds={timeAxisConfig.windowSeconds}
-          compactTimeAxisTicks={timeAxisConfig.compactTicks}
           componentConfig={componentConfigState.componentConfig}
         />
 
