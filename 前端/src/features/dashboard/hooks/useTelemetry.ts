@@ -70,7 +70,14 @@ export function useTelemetry(isExtraWide: boolean, requestedCategories: Telemetr
     }
   });
 
-  const [status, setStatus] = useState<ConnectionStatus>((appConfig.defaultMode || "SIMULATING") as ConnectionStatus);
+  const [status, setStatus] = useState<ConnectionStatus>(() => {
+    try {
+      if (localStorage.getItem("telemetry_real_mode_intent") === "true") {
+        return "CONNECTING";
+      }
+    } catch {}
+    return (appConfig.defaultMode || "SIMULATING") as ConnectionStatus;
+  });
 
   const [sampleInterval, setSampleInterval] = useState<number>(() => {
     try {
@@ -106,6 +113,9 @@ export function useTelemetry(isExtraWide: boolean, requestedCategories: Telemetr
   const socketRef = useRef<WebSocket | null>(null);
   const simulationIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const socketGenerationRef = useRef(0);
+  const staleDataTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastMetricReceivedAtRef = useRef<number>(Date.now());
+  const mountGenerationRef = useRef(0);
 
   useEffect(() => {
     try {
@@ -228,6 +238,40 @@ export function useTelemetry(isExtraWide: boolean, requestedCategories: Telemetr
     }
   }, []);
 
+  const clearStaleDataTimer = useCallback(() => {
+    if (staleDataTimerRef.current) {
+      clearTimeout(staleDataTimerRef.current);
+      staleDataTimerRef.current = null;
+    }
+  }, []);
+
+  const armStaleDataTimer = useCallback(() => {
+    clearStaleDataTimer();
+
+    const timeoutMs = Math.max(sampleIntervalRef.current * 3000, 12000);
+    staleDataTimerRef.current = setTimeout(() => {
+      staleDataTimerRef.current = null;
+
+      const ws = socketRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN || !isRealModeIntentRef.current) {
+        return;
+      }
+
+      const elapsed = Date.now() - lastMetricReceivedAtRef.current;
+      if (elapsed < timeoutMs) {
+        armStaleDataTimer();
+        return;
+      }
+
+      console.warn("[WebSocket] 遥测长时间无更新，主动重连", { elapsed, timeoutMs });
+      invalidateActiveSocket();
+      setStatus("DISCONNECTED");
+      try {
+        ws.close();
+      } catch (e) {}
+    }, timeoutMs);
+  }, [clearStaleDataTimer, invalidateActiveSocket]);
+
   const lastSubscriptionRef = useRef<{ interval: number; categories: string }>({ interval: 0, categories: '' });
 
   const sendSubscription = useCallback((ws: WebSocket) => {
@@ -253,6 +297,11 @@ export function useTelemetry(isExtraWide: boolean, requestedCategories: Telemetr
 
   const connectDevice = useCallback(() => {
     setIsRealModeIntent(true);
+
+    // 新 socket 必须重新发送订阅，不能沿用上一次连接的缓存
+    lastSubscriptionRef.current = { interval: 0, categories: "" };
+    lastMetricReceivedAtRef.current = Date.now();
+    clearStaleDataTimer();
 
     // 如果已有活跃连接，跳过
     if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
@@ -292,6 +341,8 @@ export function useTelemetry(isExtraWide: boolean, requestedCategories: Telemetr
         try {
           ws.send(JSON.stringify({ type: "get_static" }));
           sendSubscription(ws);
+          lastMetricReceivedAtRef.current = Date.now();
+          armStaleDataTimer();
         } catch (e) {
           console.error("Failed to send initial websocket subscription:", e);
         }
@@ -304,6 +355,8 @@ export function useTelemetry(isExtraWide: boolean, requestedCategories: Telemetr
           if (payload.type === "static_info") {
             setSystemInfo(normalizeStaticInfo(payload.data));
           } else if (payload.type === "metrics") {
+            lastMetricReceivedAtRef.current = Date.now();
+            armStaleDataTimer();
             const metrics = normalizeMetricPayload(payload.data, latestDataRef.current);
 
             setLatestData(metrics);
@@ -334,6 +387,7 @@ export function useTelemetry(isExtraWide: boolean, requestedCategories: Telemetr
         if (currentGeneration !== socketGenerationRef.current) return;
         setStatus("DISCONNECTED");
         socketRef.current = null;
+        clearStaleDataTimer();
         if (isRealModeIntentRef.current) {
           if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
           reconnectTimerRef.current = setTimeout(() => {
@@ -346,6 +400,7 @@ export function useTelemetry(isExtraWide: boolean, requestedCategories: Telemetr
         if (currentGeneration !== socketGenerationRef.current) return;
         console.error("WebSocket Link Error:", err);
         setStatus("DISCONNECTED");
+        clearStaleDataTimer();
         if (isRealModeIntentRef.current && !reconnectTimerRef.current) {
           reconnectTimerRef.current = setTimeout(() => {
             connectDevice();
@@ -366,6 +421,7 @@ export function useTelemetry(isExtraWide: boolean, requestedCategories: Telemetr
   const disconnectDevice = useCallback(() => {
     setIsRealModeIntent(false);
     invalidateActiveSocket();
+    clearStaleDataTimer();
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
@@ -382,6 +438,7 @@ export function useTelemetry(isExtraWide: boolean, requestedCategories: Telemetr
   const startSimulation = useCallback(() => {
     setIsRealModeIntent(false);
     invalidateActiveSocket();
+    clearStaleDataTimer();
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
@@ -470,19 +527,27 @@ export function useTelemetry(isExtraWide: boolean, requestedCategories: Telemetr
 
   // 初始化连接
   useEffect(() => {
-    let isMounted = true;
+    const mountToken = ++mountGenerationRef.current;
 
-    if (isRealModeIntentRef.current) {
+    let shouldRestoreRealMode = false;
+    try {
+      shouldRestoreRealMode = localStorage.getItem("telemetry_real_mode_intent") === "true";
+    } catch {}
+
+    if (shouldRestoreRealMode || isRealModeIntentRef.current) {
+      setIsRealModeIntent(true);
+      setStatus("CONNECTING");
       connectDevice();
     } else {
+      setIsRealModeIntent(false);
+      setStatus("SIMULATING");
       startSimulation();
     }
 
     return () => {
-      isMounted = false;
       // 延迟关闭，避免 StrictMode 双重挂载导致立即断开
       setTimeout(() => {
-        if (!isMounted) {
+        if (mountGenerationRef.current === mountToken) {
           if (simulationIntervalRef.current) {
             clearInterval(simulationIntervalRef.current);
             simulationIntervalRef.current = null;
@@ -491,6 +556,7 @@ export function useTelemetry(isExtraWide: boolean, requestedCategories: Telemetr
             clearTimeout(reconnectTimerRef.current);
             reconnectTimerRef.current = null;
           }
+          clearStaleDataTimer();
           if (socketRef.current) {
             invalidateActiveSocket();
             try {
@@ -518,7 +584,7 @@ export function useTelemetry(isExtraWide: boolean, requestedCategories: Telemetr
       } catch (e) {
         console.error("Failed to update websocket subscription:", e);
       }
-    } else if (status === "SIMULATING") {
+    } else if (status === "SIMULATING" && !isRealModeIntentRef.current) {
       startSimulation();
     }
   }, [sampleInterval, telemetryCategories, status, startSimulation, sendSubscription]);
