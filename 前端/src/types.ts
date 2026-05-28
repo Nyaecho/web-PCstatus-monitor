@@ -42,6 +42,7 @@ export interface MetricData {
   gpu_percent?: number;
   gpu_temp?: number;
   gpu_freq_mhz?: number;
+  gpu_mem_freq_mhz?: number;
   fan_speed_1?: number;
   fan_speed_2?: number;
   gpu_mem_percent?: number;

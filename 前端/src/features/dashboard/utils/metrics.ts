@@ -19,6 +19,12 @@ export const getLatestMetricValue = (latestData: MetricData, metric: DashboardMe
       return latestData.fan_speed_2 ?? 38;
     case "gpu_mem_percent":
       return latestData.gpu_mem_percent ?? 28.5;
+    case "cpu_freq_mhz":
+      return latestData.cpu_freq_mhz ?? 3800;
+    case "gpu_freq_mhz":
+      return latestData.gpu_freq_mhz ?? 0;
+    case "gpu_mem_freq_mhz":
+      return latestData.gpu_mem_freq_mhz ?? 0;
     case "battery_percent":
       return latestData.battery_percent ?? 0;
     default:
@@ -35,6 +41,9 @@ export const formatMetricValue = (value: number, metric: DashboardMetricKey, dec
   if (option.valueType === "speed") {
     return value >= 1024 ? `${(value / 1024).toFixed(1)} MB/s` : `${value.toFixed(decimals)} KB/s`;
   }
+  if (option.valueType === "frequency") {
+    return `${value.toFixed(0)} MHz`;
+  }
   return `${value.toFixed(decimals)}${option.unit}`;
 };
 
@@ -45,6 +54,18 @@ export const getProgressMemoryText = (latestData: MetricData, metric: DashboardM
 
   if (metric === "gpu_mem_percent") {
     return `${((8.0 * (latestData.gpu_mem_percent ?? 28.5)) / 100).toFixed(1)}G / 8G`;
+  }
+
+  if (metric === "cpu_freq_mhz") {
+    return `${(latestData.cpu_freq_mhz ?? 3800).toFixed(0)} MHz`;
+  }
+
+  if (metric === "gpu_freq_mhz") {
+    return `${(latestData.gpu_freq_mhz ?? 0).toFixed(0)} MHz`;
+  }
+
+  if (metric === "gpu_mem_freq_mhz") {
+    return `${(latestData.gpu_mem_freq_mhz ?? 0).toFixed(0)} MHz`;
   }
 
   if (metric === "disk_percent") {
