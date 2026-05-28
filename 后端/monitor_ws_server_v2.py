@@ -311,6 +311,47 @@ def collect_static_info() -> dict:
     }
 
 
+def _read_cpu_freq_psutil_mhz() -> float:
+    try:
+        per_cpu_freq = psutil.cpu_freq(percpu=True)
+        if per_cpu_freq:
+            valid = [item.current for item in per_cpu_freq if item and item.current and item.current > 0]
+            if valid:
+                return round(sum(valid) / len(valid), 1)
+    except Exception:
+        pass
+
+    try:
+        cpu_freq = psutil.cpu_freq()
+        if cpu_freq and cpu_freq.current and cpu_freq.current > 0:
+            return round(cpu_freq.current, 1)
+    except Exception:
+        pass
+
+    return 0.0
+
+
+def _read_cpu_freq_windows_perf_counter_mhz() -> float:
+    if platform.system() != "Windows":
+        return 0.0
+
+    try:
+        import wmi
+
+        c = wmi.WMI()
+        for cpu in c.Win32_PerfFormattedData_Counters_ProcessorInformation():
+            if getattr(cpu, "Name", "") == "_Total":
+                # ProcessorFrequency 已是当前频率（MHz），不应再次做百分比换算。
+                mhz = float(getattr(cpu, "ProcessorFrequency", 0) or 0)
+                if mhz > 0:
+                    return round(mhz, 1)
+                break
+    except Exception:
+        pass
+
+    return 0.0
+
+
 def collect_cpu_metrics() -> dict:
     cpu_percent = psutil.cpu_percent(interval=None)
     cpu_temp = 0
@@ -328,8 +369,10 @@ def collect_cpu_metrics() -> dict:
     except Exception:
         pass
 
-    cpu_freq = psutil.cpu_freq()
-    cpu_freq_current = round(cpu_freq.current, 1) if cpu_freq else 0
+    # 获取 CPU 实时频率：优先 psutil，多核取平均；失败时回退到 Windows 性能计数器。
+    cpu_freq_current = _read_cpu_freq_psutil_mhz()
+    if cpu_freq_current <= 0:
+        cpu_freq_current = _read_cpu_freq_windows_perf_counter_mhz()
 
     return {
         "percent": round(cpu_percent, 1),

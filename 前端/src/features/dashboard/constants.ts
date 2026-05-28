@@ -154,6 +154,8 @@ export const defaultSystemInfo: SystemInfo = {
 export const defaultMetricData: MetricData = {
   cpu_percent: 18.4,
   cpu_cores_percent: [12, 24, 8, 32, 16, 20, 10, 24, 8, 38, 14, 22, 10, 26, 8, 18],
+  cpu_temp: 42,
+  cpu_freq_mhz: 3801.0,
   ram_percent: 41.2,
   ram_used_gb: 9.89,
   ram_total_gb: 24.0,
@@ -165,7 +167,7 @@ export const defaultMetricData: MetricData = {
   net_recv_speed_kb: 182.9,
   gpu_percent: 24.0,
   gpu_temp: 45,
-  cpu_temp: 42,
+  gpu_freq_mhz: 2100,
   fan_speed_1: 32,
   fan_speed_2: 38,
   gpu_mem_percent: 28.5,
