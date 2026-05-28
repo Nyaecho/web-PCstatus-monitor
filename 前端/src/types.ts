@@ -28,6 +28,8 @@ export interface ProcessInfo {
 export interface MetricData {
   cpu_percent: number;
   cpu_cores_percent: number[];
+  cpu_temp: number;
+  cpu_freq_mhz: number;
   ram_percent: number;
   ram_used_gb: number;
   ram_total_gb: number;
@@ -35,19 +37,17 @@ export interface MetricData {
   disk_used_gb: number;
   disk_total_gb: number;
   battery_percent?: number;
-  net_sent_speed_kb: number; // sent in KB/s
-  net_recv_speed_kb: number; // received in KB/s
+  net_sent_speed_kb: number;
+  net_recv_speed_kb: number;
   gpu_percent?: number;
   gpu_temp?: number;
-  cpu_freq_mhz?: number;
   gpu_freq_mhz?: number;
   gpu_mem_freq_mhz?: number;
-  cpu_temp?: number;
   fan_speed_1?: number;
   fan_speed_2?: number;
   gpu_mem_percent?: number;
   processes: ProcessInfo[];
-  timestamp: string; // "HH:MM:SS"
+  timestamp: string;
 }
 
 export interface BackendStaticInfo {
@@ -80,8 +80,8 @@ export interface BackendStaticInfo {
 export interface BackendMetricPayload {
   cpu?: {
     percent?: number;
-    temp?: number | null;
-    freq_current_mhz?: number | null;
+    temp?: number;
+    freq_current_mhz?: number;
   };
   ram?: {
     percent?: number;
@@ -119,7 +119,7 @@ export interface BackendMetricPayload {
   battery?: {
     percent?: number;
     power_plugged?: boolean;
-    secs_left?: number | null;
+    secs_left?: number;
   };
   system?: {
     up_time?: string;
